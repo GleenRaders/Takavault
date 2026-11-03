@@ -21,15 +21,21 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -38,6 +44,7 @@ import com.example.data.BanknoteCatalog
 import com.example.data.TransactionEntity
 import com.example.ui.theme.AmberGold
 import com.example.ui.theme.BkashPink
+import com.example.ui.theme.DbblBlue
 import com.example.ui.theme.NeonCyan
 import com.example.ui.theme.NeonMint
 import com.example.ui.theme.NeonPink
@@ -57,6 +64,8 @@ fun HistoryAndAnalyticsTabContent(
     onMethodFilterChange: (String) -> Unit,
     onCategoryFilterChange: (String) -> Unit,
     onDateFilterChange: (String) -> Unit,
+    onCustomDaysChange: (Int) -> Unit,
+    onExportPdfClick: () -> Unit,
     onOpenReceipt: (TransactionEntity) -> Unit,
     onDeleteTransaction: (String) -> Unit
 ) {
@@ -65,10 +74,12 @@ fun HistoryAndAnalyticsTabContent(
     }
     val totalExpense = remember(expenses) { expenses.sumOf { it.amount } }
     val bkashExpense = remember(expenses) { expenses.filter { it.method == "bkash" }.sumOf { it.amount } }
+    val dbblExpense = remember(expenses) { expenses.filter { it.method == "dbbl" }.sumOf { it.amount } }
     val cashExpense = remember(expenses) { expenses.filter { it.method == "cash" }.sumOf { it.amount } }
 
     val bkashPct = if (totalExpense > 0) Math.round((bkashExpense.toDouble() / totalExpense.toDouble()) * 100).toInt() else 0
-    val cashPct = if (totalExpense > 0) 100 - bkashPct else 0
+    val dbblPct = if (totalExpense > 0) Math.round((dbblExpense.toDouble() / totalExpense.toDouble()) * 100).toInt() else 0
+    val cashPct = if (totalExpense > 0) (100 - bkashPct - dbblPct).coerceAtLeast(0) else 0
 
     val categoryStats = remember(expenses, state.categories) {
         val map = mutableMapOf<String, Int>()
@@ -97,13 +108,13 @@ fun HistoryAndAnalyticsTabContent(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "📊 পরিসংখ্যান ড্যাশবোর্ড",
+                        text = BanglaFormatters.tr("📊 পরিসংখ্যান ড্যাশবোর্ড", "📊 Analytics Dashboard"),
                         color = Color.White,
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "খাতভিত্তিক খরচ এবং বিকাশ বনাম নগদ অনুপাত",
+                        text = BanglaFormatters.tr("খাতভিত্তিক খরচ এবং বিকাশ, ব্যাংক ও নগদ অনুপাত", "Category breakdown & payment method split"),
                         color = TextSecondary,
                         fontSize = 11.sp
                     )
@@ -116,7 +127,7 @@ fun HistoryAndAnalyticsTabContent(
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
                     Text(
-                        text = "মোট খরচ: ${BanglaFormatters.formatBDT(totalExpense)}",
+                        text = "${BanglaFormatters.tr("মোট খরচ:", "Total:")} ${BanglaFormatters.formatBDT(totalExpense)}",
                         color = NeonPink,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold
@@ -124,10 +135,10 @@ fun HistoryAndAnalyticsTabContent(
                 }
             }
 
-            // bKash vs Cash Split Cards
+            // Payment Method Split Cards
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Column(
                     modifier = Modifier
@@ -135,36 +146,76 @@ fun HistoryAndAnalyticsTabContent(
                         .clip(RoundedCornerShape(14.dp))
                         .background(BkashPink.copy(alpha = 0.12f))
                         .border(1.dp, BkashPink.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
-                        .padding(10.dp),
+                        .padding(9.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text(text = "বিকাশ পেমেন্ট", color = Color(0xFFFBCFE8), fontSize = 11.sp)
+                        Text(text = BanglaFormatters.tr("বিকাশ", "bKash"), color = Color(0xFFFBCFE8), fontSize = 10.sp)
                         Text(
                             text = "${BanglaFormatters.toBanglaDigits(bkashPct)}%",
                             color = Color(0xFFFBCFE8),
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
                     Text(
                         text = BanglaFormatters.formatBDT(bkashExpense),
                         color = Color.White,
-                        fontSize = 16.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
                     LinearProgressIndicator(
                         progress = { bkashPct / 100f },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(6.dp)
+                            .height(5.dp)
                             .clip(RoundedCornerShape(50)),
                         color = BkashPink,
                         trackColor = Color.Black.copy(alpha = 0.4f)
                     )
+                }
+
+                if (state.walletConfig.showDbblSection) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(DbblBlue.copy(alpha = 0.14f))
+                            .border(1.dp, DbblBlue.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+                            .padding(9.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(text = BanglaFormatters.tr("ডিবিবিএল", "DBBL"), color = Color(0xFF93C5FD), fontSize = 10.sp)
+                            Text(
+                                text = "${BanglaFormatters.toBanglaDigits(dbblPct)}%",
+                                color = Color(0xFF93C5FD),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Text(
+                            text = BanglaFormatters.formatBDT(dbblExpense),
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        LinearProgressIndicator(
+                            progress = { dbblPct / 100f },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(5.dp)
+                                .clip(RoundedCornerShape(50)),
+                            color = DbblBlue,
+                            trackColor = Color.Black.copy(alpha = 0.4f)
+                        )
+                    }
                 }
 
                 Column(
@@ -173,32 +224,32 @@ fun HistoryAndAnalyticsTabContent(
                         .clip(RoundedCornerShape(14.dp))
                         .background(NeonMint.copy(alpha = 0.12f))
                         .border(1.dp, NeonMint.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
-                        .padding(10.dp),
+                        .padding(9.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
-                        Text(text = "নগদ ক্যাশ খরচ", color = Color(0xFFA7F3D0), fontSize = 11.sp)
+                        Text(text = BanglaFormatters.tr("নগদ ক্যাশ", "Cash"), color = Color(0xFFA7F3D0), fontSize = 10.sp)
                         Text(
                             text = "${BanglaFormatters.toBanglaDigits(cashPct)}%",
                             color = Color(0xFFA7F3D0),
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }
                     Text(
                         text = BanglaFormatters.formatBDT(cashExpense),
                         color = Color.White,
-                        fontSize = 16.sp,
+                        fontSize = 13.sp,
                         fontWeight = FontWeight.Bold
                     )
                     LinearProgressIndicator(
                         progress = { cashPct / 100f },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(6.dp)
+                            .height(5.dp)
                             .clip(RoundedCornerShape(50)),
                         color = NeonMint,
                         trackColor = Color.Black.copy(alpha = 0.4f)
@@ -244,7 +295,7 @@ fun HistoryAndAnalyticsTabContent(
                         }
                     }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(text = "সর্বমোট ব্যয়", color = TextSecondary, fontSize = 9.sp)
+                        Text(text = BanglaFormatters.tr("সর্বমোট ব্যয়", "Total Spend"), color = TextSecondary, fontSize = 9.sp)
                         Text(
                             text = BanglaFormatters.formatBDT(totalExpense),
                             color = Color.White,
@@ -260,7 +311,7 @@ fun HistoryAndAnalyticsTabContent(
                 ) {
                     if (categoryStats.isEmpty()) {
                         Text(
-                            text = "এখনো কোনো খরচের রেকর্ড নেই",
+                            text = BanglaFormatters.tr("এখনো কোনো খরচের রেকর্ড নেই", "No expenses recorded yet"),
                             color = TextSecondary,
                             fontSize = 12.sp
                         )
@@ -311,6 +362,7 @@ fun HistoryAndAnalyticsTabContent(
         val smallNotes = (state.notes[20] ?: 0) * 20 + (state.notes[10] ?: 0) * 10 +
             (state.notes[5] ?: 0) * 5 + (state.notes[2] ?: 0) * 2 + (state.notes[1] ?: 0) * 1
         val smallCount = state.smallNoteCount
+        val threshold = state.walletConfig.lowBhangtiThreshold
 
         Column(
             modifier = Modifier
@@ -327,7 +379,7 @@ fun HistoryAndAnalyticsTabContent(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "💴 ভল্টে থাকা ভাঙতি ও নোটের মূল্যমান অনুপাত",
+                    text = BanglaFormatters.tr("💴 ভল্টে থাকা ভাঙতি ও নোটের মূল্যমান অনুপাত", "💴 Vault Denomination Distribution"),
                     color = Color.White,
                     fontSize = 14.sp,
                     fontWeight = FontWeight.Bold,
@@ -336,18 +388,18 @@ fun HistoryAndAnalyticsTabContent(
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(6.dp))
-                        .background(if (smallCount >= 8) NeonMint.copy(alpha = 0.15f) else AmberGold.copy(alpha = 0.15f))
+                        .background(if (smallCount >= threshold) NeonMint.copy(alpha = 0.15f) else AmberGold.copy(alpha = 0.15f))
                         .border(
                             1.dp,
-                            if (smallCount >= 8) NeonMint.copy(alpha = 0.35f) else AmberGold.copy(alpha = 0.35f),
+                            if (smallCount >= threshold) NeonMint.copy(alpha = 0.35f) else AmberGold.copy(alpha = 0.35f),
                             RoundedCornerShape(6.dp)
                         )
                         .padding(horizontal = 8.dp, vertical = 2.dp)
                 ) {
                     Text(
-                        text = if (smallCount >= 8) "✓ পর্যাপ্ত খুচরা (${BanglaFormatters.toBanglaDigits(smallCount)}টি)"
-                        else "⚠️ খুচরা কম (${BanglaFormatters.toBanglaDigits(smallCount)}টি)",
-                        color = if (smallCount >= 8) NeonMint else AmberGold,
+                        text = if (smallCount >= threshold) BanglaFormatters.tr("✓ পর্যাপ্ত খুচরা (${BanglaFormatters.toBanglaDigits(smallCount)}টি)", "✓ Healthy Change ($smallCount)")
+                        else BanglaFormatters.tr("⚠️ খুচরা কম (${BanglaFormatters.toBanglaDigits(smallCount)}টি)", "⚠️ Low Change ($smallCount)"),
+                        color = if (smallCount >= threshold) NeonMint else AmberGold,
                         fontSize = 10.sp,
                         fontWeight = FontWeight.Bold
                     )
@@ -355,9 +407,9 @@ fun HistoryAndAnalyticsTabContent(
             }
 
             val tiers = listOf(
-                Triple("বড় নোট (৳১০০০, ৳৫০০)", highNotes, Color(0xFFA855F7)),
-                Triple("মাঝারি নোট (৳২০০, ৳১০০, ৳৫০)", midNotes, NeonCyan),
-                Triple("খুচরা ভাঙতি (৳২০ থেকে ৳১)", smallNotes, NeonMint)
+                Triple(BanglaFormatters.tr("বড় নোট (৳১০০০, ৳৫০০)", "Large Notes (৳1000, ৳500)"), highNotes, Color(0xFFA855F7)),
+                Triple(BanglaFormatters.tr("মাঝারি নোট (৳২০০, ৳১০০, ৳৫০)", "Mid Notes (৳200, ৳100, ৳50)"), midNotes, NeonCyan),
+                Triple(BanglaFormatters.tr("খুচরা ভাঙতি (৳২০ থেকে ৳১)", "Small Change (৳20 to ৳1)"), smallNotes, NeonMint)
             )
             tiers.forEach { (label, value, color) ->
                 val pct = if (cashTotal > 0) Math.round((value.toDouble() / cashTotal.toDouble()) * 100).toInt() else 0
@@ -404,30 +456,52 @@ fun HistoryAndAnalyticsTabContent(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "📜 লেনদেনের ইতিহাস ও নোট ট্র্যাকিং লগ",
+                        text = BanglaFormatters.tr("📜 লেনদেনের ইতিহাস ও নোট ট্র্যাকিং লগ", "📜 Transaction History & Note Log"),
                         color = Color.White,
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "প্রতিটি খরচে দেওয়া ও ফেরত পাওয়া ভাঙতি নোটের সম্পূর্ণ হিসাব",
+                        text = BanglaFormatters.tr("সময়সীমা নির্বাচন করে ইতিহাস দেখুন ও PDF এক্সপোর্ট করুন", "Filter by days, month, or year & export to PDF"),
                         color = TextSecondary,
                         fontSize = 11.sp
                     )
                 }
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(NeonCyan.copy(alpha = 0.15f))
-                        .border(1.dp, NeonCyan.copy(alpha = 0.35f), RoundedCornerShape(50))
-                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    Text(
-                        text = "${BanglaFormatters.toBanglaDigits(filteredTransactions.size)}টি লেনদেন",
-                        color = NeonCyan,
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(NeonMint.copy(alpha = 0.2f))
+                            .border(1.dp, NeonMint, RoundedCornerShape(10.dp))
+                            .clickable { onExportPdfClick() }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                            .testTag("btn_export_history_pdf"),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = BanglaFormatters.tr("📄 PDF এক্সপোর্ট", "📄 Export PDF"),
+                            color = NeonMint,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(NeonCyan.copy(alpha = 0.15f))
+                            .border(1.dp, NeonCyan.copy(alpha = 0.35f), RoundedCornerShape(50))
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = "${BanglaFormatters.toBanglaDigits(filteredTransactions.size)}${BanglaFormatters.tr("টি", "")}",
+                            color = NeonCyan,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
 
@@ -444,7 +518,7 @@ fun HistoryAndAnalyticsTabContent(
                 OutlinedTextField(
                     value = state.filterState.searchQuery,
                     onValueChange = onSearchQueryChange,
-                    placeholder = { Text("🔍 খাত বা বিবরণ খুঁজুন...", fontSize = 12.sp, color = TextSecondary) },
+                    placeholder = { Text(BanglaFormatters.tr("🔍 খাত বা বিবরণ খুঁজুন...", "🔍 Search category or memo..."), fontSize = 12.sp, color = TextSecondary) },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     colors = OutlinedTextFieldDefaults.colors(
@@ -456,13 +530,15 @@ fun HistoryAndAnalyticsTabContent(
                     shape = RoundedCornerShape(10.dp)
                 )
 
-                // Method Filter Chips
-                val methods = listOf(
-                    "all" to "সব মাধ্যম",
-                    "cash" to "নগদ খরচ",
-                    "bkash" to "বিকাশ খরচ",
-                    "inflow" to "টাকা জমা"
-                )
+                val methods = buildList {
+                    add("all" to BanglaFormatters.tr("সব মাধ্যম", "All"))
+                    add("cash" to BanglaFormatters.tr("নগদ খরচ", "Cash"))
+                    add("bkash" to BanglaFormatters.tr("বিকাশ খরচ", "bKash"))
+                    if (state.walletConfig.showDbblSection) {
+                        add("dbbl" to BanglaFormatters.tr("ডিবিবিএল খরচ", "DBBL"))
+                    }
+                    add("inflow" to BanglaFormatters.tr("টাকা জমা", "Inflow"))
+                }
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -492,12 +568,25 @@ fun HistoryAndAnalyticsTabContent(
                     }
                 }
 
-                // Date Range Filter Chips
+                // Period Filter: All Time, Today, This Month, This Year, Custom Days
+                Text(
+                    text = BanglaFormatters.tr(
+                        "📅 সময়সীমা নির্বাচন করুন (এই মাস / এই বছর / কত দিন):",
+                        "📅 Select Period (This Month / This Year / How Many Days):"
+                    ),
+                    color = TextSecondary,
+                    fontSize = 10.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
                 val dates = listOf(
-                    "all" to "সব সময়",
-                    "today" to "আজকের",
-                    "week" to "গত ৭ দিন",
-                    "month" to "চলতি মাস"
+                    "all" to BanglaFormatters.tr("সব সময়", "All Time"),
+                    "today" to BanglaFormatters.tr("আজকের", "Today"),
+                    "month" to BanglaFormatters.tr("এই মাস (চলতি মাস)", "This Month"),
+                    "year" to BanglaFormatters.tr("এই বছর (চলতি বছর)", "This Year"),
+                    "custom_days" to BanglaFormatters.tr(
+                        "গত ${BanglaFormatters.toBanglaDigits(state.filterState.customDaysCount)} দিন (কাস্টম)",
+                        "Last ${state.filterState.customDaysCount} Days (Custom)"
+                    )
                 )
                 FlowRow(
                     modifier = Modifier.fillMaxWidth(),
@@ -517,12 +606,134 @@ fun HistoryAndAnalyticsTabContent(
                                 )
                                 .clickable { onDateFilterChange(key) }
                                 .padding(horizontal = 10.dp, vertical = 6.dp)
+                                .testTag("history_date_filter_$key")
                         ) {
                             Text(
                                 text = label,
                                 color = if (active) NeonMint else TextSecondary,
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                // Custom Days Selector Row (How many days: quick chips + custom input)
+                var customDaysInput by remember(state.filterState.customDaysCount) {
+                    mutableStateOf(BanglaFormatters.toBanglaDigits(state.filterState.customDaysCount))
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(SlateSurface.copy(alpha = 0.75f))
+                        .border(
+                            1.dp,
+                            if (state.filterState.dateFilter == "custom_days") NeonMint.copy(alpha = 0.5f)
+                            else Color.White.copy(alpha = 0.08f),
+                            RoundedCornerShape(10.dp)
+                        )
+                        .padding(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = BanglaFormatters.tr("🗓️ কত দিনের ইতিহাস দেখতে বা PDF করতে চান?", "🗓️ Set how many days to view or export:"),
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = BanglaFormatters.tr(
+                                "সক্রিয়: ${BanglaFormatters.toBanglaDigits(state.filterState.customDaysCount)} দিন",
+                                "Active: ${state.filterState.customDaysCount}d"
+                            ),
+                            color = NeonMint,
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        listOf(3, 7, 15, 30, 60, 90).forEach { d ->
+                            val isSelectedDay = state.filterState.dateFilter == "custom_days" &&
+                                state.filterState.customDaysCount == d
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(7.dp))
+                                    .background(if (isSelectedDay) NeonMint.copy(alpha = 0.25f) else Color.Black.copy(alpha = 0.35f))
+                                    .border(
+                                        1.dp,
+                                        if (isSelectedDay) NeonMint else Color.White.copy(alpha = 0.12f),
+                                        RoundedCornerShape(7.dp)
+                                    )
+                                    .clickable {
+                                        customDaysInput = BanglaFormatters.toBanglaDigits(d)
+                                        onCustomDaysChange(d)
+                                    }
+                                    .padding(vertical = 5.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "${BanglaFormatters.toBanglaDigits(d)}${BanglaFormatters.tr("দিন", "d")}",
+                                    color = if (isSelectedDay) NeonMint else TextSecondary,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = customDaysInput,
+                            onValueChange = {
+                                customDaysInput = it
+                                val parsed = BanglaFormatters.parseBanglaNumber(it)
+                                if (parsed > 0) {
+                                    onCustomDaysChange(parsed)
+                                }
+                            },
+                            placeholder = { Text(BanglaFormatters.tr("যেকোনো দিন সংখ্যা লিখুন (যেমন: ৪৫)", "Enter custom days (e.g. 45)"), fontSize = 11.sp, color = TextSecondary) },
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("input_custom_days"),
+                            colors = OutlinedTextFieldDefaults.colors(
+                                focusedBorderColor = NeonMint,
+                                unfocusedBorderColor = Color.White.copy(alpha = 0.18f),
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White
+                            ),
+                            shape = RoundedCornerShape(8.dp)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(NeonMint)
+                                .clickable { onExportPdfClick() }
+                                .padding(horizontal = 12.dp, vertical = 12.dp)
+                                .testTag("btn_export_filtered_pdf"),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = BanglaFormatters.tr("📄 এই সময়ের PDF", "📄 Save PDF"),
+                                color = Color.Black,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.ExtraBold
                             )
                         }
                     }
@@ -541,7 +752,7 @@ fun HistoryAndAnalyticsTabContent(
                 ) {
                     Text(text = "📭", fontSize = 26.sp)
                     Text(
-                        text = "এই ফিল্টারে কোনো লেনদেন পাওয়া যায়নি",
+                        text = BanglaFormatters.tr("এই ফিল্টারে কোনো লেনদেন পাওয়া যায়নি", "No transactions match this filter"),
                         color = TextSecondary,
                         fontSize = 12.sp,
                         fontWeight = FontWeight.Bold,
@@ -554,109 +765,148 @@ fun HistoryAndAnalyticsTabContent(
                 }
                 filteredTransactions.forEach { tx ->
                     androidx.compose.runtime.key(tx.id) {
-                    val isInflow = tx.type == "inflow"
-                    val cat = categoriesById[tx.categoryId]
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(SlateSurface)
-                            .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(14.dp))
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.Top
+                        val isInflow = tx.type == "inflow"
+                        val cat = categoriesById[tx.categoryId]
+                        val methodBadgeColor = when (tx.method) {
+                            "bkash" -> BkashPink
+                            "dbbl" -> DbblBlue
+                            else -> NeonMint
+                        }
+                        val methodLabel = when (tx.method) {
+                            "bkash" -> BanglaFormatters.tr("বিকাশ", "bKash")
+                            "dbbl" -> BanglaFormatters.tr("ডিবিবিএল", "DBBL")
+                            else -> BanglaFormatters.tr("নগদ", "Cash")
+                        }
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(SlateSurface)
+                                .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(14.dp))
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
                             Row(
-                                modifier = Modifier.weight(1f),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.Top
                             ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(38.dp)
-                                        .clip(RoundedCornerShape(10.dp))
-                                        .background(Color.White.copy(alpha = 0.06f))
-                                        .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(10.dp)),
-                                    contentAlignment = Alignment.Center
+                                Row(
+                                    modifier = Modifier.weight(1f),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
                                 ) {
-                                    Text(
-                                        text = cat?.icon ?: if (isInflow) "📥" else "📦",
-                                        fontSize = 16.sp
-                                    )
-                                }
-                                Column {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                    Box(
+                                        modifier = Modifier
+                                            .size(38.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(Color.White.copy(alpha = 0.06f))
+                                            .border(1.dp, Color.White.copy(alpha = 0.1f), RoundedCornerShape(10.dp)),
+                                        contentAlignment = Alignment.Center
                                     ) {
                                         Text(
-                                            text = cat?.name ?: if (isInflow) "তহবিল জমা" else "বিবিধ",
-                                            color = Color.White,
-                                            fontSize = 13.sp,
-                                            fontWeight = FontWeight.Bold
+                                            text = cat?.icon ?: if (isInflow) "📥" else "📦",
+                                            fontSize = 16.sp
                                         )
-                                        Box(
-                                            modifier = Modifier
-                                                .clip(RoundedCornerShape(4.dp))
-                                                .background(
-                                                    if (tx.method == "bkash") BkashPink.copy(alpha = 0.25f)
-                                                    else NeonMint.copy(alpha = 0.2f)
-                                                )
-                                                .border(
-                                                    1.dp,
-                                                    if (tx.method == "bkash") BkashPink.copy(alpha = 0.45f)
-                                                    else NeonMint.copy(alpha = 0.4f),
-                                                    RoundedCornerShape(4.dp)
-                                                )
-                                                .padding(horizontal = 6.dp, vertical = 1.dp)
+                                    }
+                                    Column {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp)
                                         ) {
                                             Text(
-                                                text = if (tx.method == "bkash") "বিকাশ" else "নগদ",
-                                                color = if (tx.method == "bkash") Color(0xFFFBCFE8) else NeonMint,
-                                                fontSize = 10.sp,
+                                                text = cat?.name ?: if (isInflow) BanglaFormatters.tr("তহবিল জমা", "Inflow") else BanglaFormatters.tr("বিবিধ", "Misc"),
+                                                color = Color.White,
+                                                fontSize = 13.sp,
                                                 fontWeight = FontWeight.Bold
                                             )
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(4.dp))
+                                                    .background(methodBadgeColor.copy(alpha = 0.22f))
+                                                    .border(
+                                                        1.dp,
+                                                        methodBadgeColor.copy(alpha = 0.45f),
+                                                        RoundedCornerShape(4.dp)
+                                                    )
+                                                    .padding(horizontal = 6.dp, vertical = 1.dp)
+                                            ) {
+                                                Text(
+                                                    text = methodLabel,
+                                                    color = Color.White,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Bold
+                                                )
+                                            }
                                         }
-                                    }
-                                    if (tx.note.isNotBlank()) {
+                                        if (tx.note.isNotBlank()) {
+                                            Text(
+                                                text = tx.note,
+                                                color = TextSecondary,
+                                                fontSize = 12.sp
+                                            )
+                                        }
                                         Text(
-                                            text = tx.note,
+                                            text = BanglaFormatters.formatBanglaDateTime(tx.timestamp),
                                             color = TextSecondary,
-                                            fontSize = 12.sp
+                                            fontSize = 10.sp
                                         )
                                     }
+                                }
+
+                                Column(
+                                    horizontalAlignment = Alignment.End,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
                                     Text(
-                                        text = BanglaFormatters.formatBanglaDateTime(tx.timestamp),
-                                        color = TextSecondary,
-                                        fontSize = 10.sp
+                                        text = "${if (isInflow) "+" else "−"} ${BanglaFormatters.formatBDT(tx.amount)}",
+                                        color = if (isInflow) NeonMint else NeonPink,
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.ExtraBold
                                     )
+                                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(NeonCyan.copy(alpha = 0.15f))
+                                                .border(1.dp, NeonCyan.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
+                                                .clickable { onOpenReceipt(tx) }
+                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        ) {
+                                            Text(
+                                                text = BanglaFormatters.tr("🧾 রসিদ", "🧾 Receipt"),
+                                                color = NeonCyan,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.SemiBold
+                                            )
+                                        }
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(Color.White.copy(alpha = 0.06f))
+                                                .clickable { onDeleteTransaction(tx.id) }
+                                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        ) {
+                                            Text(text = "✕", color = TextSecondary, fontSize = 10.sp)
+                                        }
+                                    }
                                 }
                             }
 
-                            Column(
-                                horizontalAlignment = Alignment.End,
-                                verticalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Text(
-                                    text = "${if (isInflow) "+" else "−"} ${BanglaFormatters.formatBDT(tx.amount)}",
-                                    color = if (isInflow) NeonMint else NeonPink,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.ExtraBold
-                                )
-                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            if (tx.method == "cash" && tx.type == "expense") {
+                                HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
+                                FlowRow(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
                                     Box(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(6.dp))
-                                            .background(NeonCyan.copy(alpha = 0.15f))
-                                            .border(1.dp, NeonCyan.copy(alpha = 0.35f), RoundedCornerShape(6.dp))
-                                            .clickable { onOpenReceipt(tx) }
-                                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                                            .background(Color.White.copy(alpha = 0.05f))
+                                            .padding(horizontal = 8.dp, vertical = 3.dp)
                                     ) {
                                         Text(
-                                            text = "🧾 রসিদ",
+                                            text = "📤 ${BanglaFormatters.tr("দেওয়া:", "Given:")} ${BanglaFormatters.summarizeNotesInline(tx.tenderedNotes)}",
                                             color = NeonCyan,
                                             fontSize = 10.sp,
                                             fontWeight = FontWeight.SemiBold
@@ -665,71 +915,38 @@ fun HistoryAndAnalyticsTabContent(
                                     Box(
                                         modifier = Modifier
                                             .clip(RoundedCornerShape(6.dp))
-                                            .background(Color.White.copy(alpha = 0.06f))
-                                            .clickable { onDeleteTransaction(tx.id) }
-                                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                                    ) {
-                                        Text(text = "✕", color = TextSecondary, fontSize = 10.sp)
-                                    }
-                                }
-                            }
-                        }
-
-                        if (tx.method == "cash" && tx.type == "expense") {
-                            HorizontalDivider(color = Color.White.copy(alpha = 0.08f))
-                            FlowRow(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                verticalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(Color.White.copy(alpha = 0.05f))
-                                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                                ) {
-                                    Text(
-                                        text = "📤 দেওয়া: ${BanglaFormatters.summarizeNotesInline(tx.tenderedNotes)}",
-                                        color = NeonCyan,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(6.dp))
-                                        .background(Color.White.copy(alpha = 0.05f))
-                                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                                ) {
-                                    Text(
-                                        text = "📥 ফেরত: ${BanglaFormatters.summarizeNotesInline(tx.receivedNotes)}",
-                                        color = NeonMint,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                                if (tx.discrepancy != 0) {
-                                    Box(
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(6.dp))
-                                            .background(
-                                                if (tx.discrepancy < 0) NeonPink.copy(alpha = 0.2f)
-                                                else AmberGold.copy(alpha = 0.2f)
-                                            )
+                                            .background(Color.White.copy(alpha = 0.05f))
                                             .padding(horizontal = 8.dp, vertical = 3.dp)
                                     ) {
                                         Text(
-                                            text = if (tx.discrepancy < 0) "পাওনা বাকি: ${BanglaFormatters.formatBDT(abs(tx.discrepancy))}"
-                                            else "অতিরিক্ত প্রাপ্তি: ${BanglaFormatters.formatBDT(tx.discrepancy)}",
-                                            color = if (tx.discrepancy < 0) NeonPink else AmberGold,
+                                            text = "📥 ${BanglaFormatters.tr("ফেরত:", "Change:")} ${BanglaFormatters.summarizeNotesInline(tx.receivedNotes)}",
+                                            color = NeonMint,
                                             fontSize = 10.sp,
-                                            fontWeight = FontWeight.Bold
+                                            fontWeight = FontWeight.SemiBold
                                         )
+                                    }
+                                    if (tx.discrepancy != 0) {
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(
+                                                    if (tx.discrepancy < 0) NeonPink.copy(alpha = 0.2f)
+                                                    else AmberGold.copy(alpha = 0.2f)
+                                                )
+                                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                                        ) {
+                                            Text(
+                                                text = if (tx.discrepancy < 0) "${BanglaFormatters.tr("পাওনা বাকি:", "Owed:")} ${BanglaFormatters.formatBDT(abs(tx.discrepancy))}"
+                                                else "${BanglaFormatters.tr("অতিরিক্ত প্রাপ্তি:", "Extra:")} ${BanglaFormatters.formatBDT(tx.discrepancy)}",
+                                                color = if (tx.discrepancy < 0) NeonPink else AmberGold,
+                                                fontSize = 10.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
                     }
                 }
             }

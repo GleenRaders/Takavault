@@ -14,9 +14,20 @@ data class WalletConfigEntity(
     @PrimaryKey val id: Int = 1,
     val bkashBalance: Int = 8450,
     val bkashVisible: Boolean = true,
+    val dbblBalance: Int = 24500,
+    val dbblVisible: Boolean = true,
+    val showDbblSection: Boolean = true,
+    val dbblAccountNo: String = "4829",
     val monthlyBudget: Int = 25000,
+    val savingsGoal: Int = 5000,
+    val lowBhangtiThreshold: Int = 8,
+    val showTempMoneySection: Boolean = true,
     val soundEnabled: Boolean = true,
-    val layoutMode: String = "tabs" // "tabs" or "full"
+    val layoutMode: String = "tabs", // "tabs" or "full"
+    val themeMode: String = "dark", // "dark" or "light"
+    val language: String = "bn", // "bn" or "en"
+    val biometricLockEnabled: Boolean = false,
+    val biometricPinCode: String = "1234"
 )
 
 @Immutable
@@ -42,7 +53,7 @@ data class TransactionEntity(
     @PrimaryKey val id: String,
     val timestamp: Long,
     val type: String, // "expense" or "inflow"
-    val method: String, // "cash" or "bkash"
+    val method: String, // "cash", "bkash", or "dbbl"
     val categoryId: String,
     val amount: Int,
     val note: String,
@@ -80,7 +91,7 @@ data class TempMoneyEntity(
     @PrimaryKey val id: String,
     val title: String,
     val amount: Int,
-    val whereStored: String, // "cash", "bkash", "other"
+    val whereStored: String, // "cash", "bkash", "dbbl", "other"
     val timestamp: Long,
     val done: Boolean = false
 )

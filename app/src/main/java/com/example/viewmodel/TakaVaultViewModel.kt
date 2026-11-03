@@ -33,11 +33,14 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-enum class AppTab(val key: String, val icon: String, val label: String) {
-    HOME("home", "🏠", "হোম ও ভল্ট"),
-    CATEGORIES("categories", "⚡", "খরচ ও খাত"),
-    TOOLS("tools", "📒", "বাকি ও টুলস"),
-    HISTORY("history", "📊", "ইতিহাস ও চার্ট")
+enum class AppTab(val key: String, val icon: String, val labelBn: String, val labelEn: String) {
+    HOME("home", "🏠", "হোম ও ভল্ট", "Home & Vault"),
+    CATEGORIES("categories", "⚡", "খরচ ও খাত", "Spend & Cats"),
+    TOOLS("tools", "📒", "বাকি ও টুলস", "Tools & Debt"),
+    HISTORY("history", "📊", "ইতিহাস ও চার্ট", "History & Stats");
+
+    val label: String
+        get() = BanglaFormatters.tr(labelBn, labelEn)
 }
 
 enum class ExpenseStep {
@@ -45,7 +48,8 @@ enum class ExpenseStep {
     STEP_2A_BKASH,
     STEP_2B_TENDER,
     STEP_2B_CHANGE,
-    STEP_2B_CONFIRM
+    STEP_2B_CONFIRM,
+    STEP_2C_DBBL
 }
 
 enum class ToastVariant {
@@ -63,7 +67,7 @@ data class CyberToast(
 data class ExpenseWorkflowState(
     val isOpen: Boolean = false,
     val categoryId: String = "grocery",
-    val method: String? = null, // "bkash" or "cash"
+    val method: String? = null, // "bkash", "cash", or "dbbl"
     val step: ExpenseStep = ExpenseStep.STEP_1_METHOD,
     val billAmountInput: String = "",
     val noteInput: String = "",
@@ -92,6 +96,17 @@ data class BkashBridgeState(
 }
 
 @Immutable
+data class DbblBridgeState(
+    val isOpen: Boolean = false,
+    val mode: String = "atm_withdraw", // "atm_withdraw", "to_bkash", "from_bkash"
+    val amountInput: String = "১০০০",
+    val notes: Map<Int, Int> = emptyMap()
+) {
+    val amount: Int = BanglaFormatters.parseBanglaNumber(amountInput)
+    val notesTotal: Int = BanglaFormatters.calculateNotesTotal(notes)
+}
+
+@Immutable
 data class NoteExchangeState(
     val isOpen: Boolean = false,
     val sourceDenom: Int = 1000,
@@ -110,9 +125,10 @@ data class CalculatorState(
 @Immutable
 data class HistoryFilterState(
     val searchQuery: String = "",
-    val methodFilter: String = "all", // "all", "cash", "bkash", "inflow"
+    val methodFilter: String = "all", // "all", "cash", "bkash", "dbbl", "inflow"
     val categoryFilter: String = "all",
-    val dateFilter: String = "all" // "all", "today", "week", "month"
+    val dateFilter: String = "all", // "all", "today", "week", "month", "year", "custom_days"
+    val customDaysCount: Int = 7
 )
 
 @Immutable
@@ -129,7 +145,8 @@ data class TakaVaultUiState(
 ) {
     val cashTotal: Int = BanglaFormatters.calculateNotesTotal(notes)
     val totalNoteCount: Int = BanglaFormatters.calculateNotesCount(notes)
-    val netWorth: Int = walletConfig.bkashBalance + cashTotal
+    val activeDbblBalance: Int = if (walletConfig.showDbblSection) walletConfig.dbblBalance else 0
+    val netWorth: Int = walletConfig.bkashBalance + cashTotal + activeDbblBalance
     val smallNoteCount: Int = (notes[20] ?: 0) + (notes[10] ?: 0) + (notes[5] ?: 0) + (notes[2] ?: 0) + (notes[1] ?: 0)
 }
 
@@ -146,12 +163,19 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
     private val _toast = MutableStateFlow<CyberToast?>(null)
     val toast: StateFlow<CyberToast?> = _toast.asStateFlow()
 
+    // Biometric session unlock state (when biometricLockEnabled is true, starts locked on app launch)
+    private val _isSessionUnlocked = MutableStateFlow(false)
+    val isSessionUnlocked: StateFlow<Boolean> = _isSessionUnlocked.asStateFlow()
+
     // Modal states
     private val _expenseWorkflow = MutableStateFlow(ExpenseWorkflowState())
     val expenseWorkflow: StateFlow<ExpenseWorkflowState> = _expenseWorkflow.asStateFlow()
 
     private val _showAddBkashModal = MutableStateFlow(false)
     val showAddBkashModal: StateFlow<Boolean> = _showAddBkashModal.asStateFlow()
+
+    private val _showAddDbblModal = MutableStateFlow(false)
+    val showAddDbblModal: StateFlow<Boolean> = _showAddDbblModal.asStateFlow()
 
     private val _addCashNotes = MutableStateFlow<Map<Int, Int>?>(null)
     val addCashNotes: StateFlow<Map<Int, Int>?> = _addCashNotes.asStateFlow()
@@ -171,6 +195,9 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
     private val _bkashBridge = MutableStateFlow(BkashBridgeState())
     val bkashBridge: StateFlow<BkashBridgeState> = _bkashBridge.asStateFlow()
 
+    private val _dbblBridge = MutableStateFlow(DbblBridgeState())
+    val dbblBridge: StateFlow<DbblBridgeState> = _dbblBridge.asStateFlow()
+
     private val _noteExchange = MutableStateFlow(NoteExchangeState())
     val noteExchange: StateFlow<NoteExchangeState> = _noteExchange.asStateFlow()
 
@@ -189,6 +216,8 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         _quickCalcBkashInput
     ) { values ->
         val config = (values[0] as? WalletConfigEntity) ?: WalletConfigEntity()
+        BanglaFormatters.setLanguageMode(config.language)
+
         @Suppress("UNCHECKED_CAST")
         val noteList = values[1] as List<com.example.data.NoteCountEntity>
         @Suppress("UNCHECKED_CAST")
@@ -269,10 +298,67 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         viewModelScope.launch {
             repository.updateWalletConfig { it.copy(layoutMode = next) }
             showToastMessage(
-                if (next == "full") "ফুল ড্যাশবোর্ড ভিউ চালু করা হয়েছে"
-                else "অ্যান্ড্রয়েড ট্যাব ভিউ (নো-স্ক্রল মোড) চালু হয়েছে",
+                if (next == "full") BanglaFormatters.tr("ফুল ড্যাশবোর্ড ভিউ চালু করা হয়েছে", "Full Dashboard View Enabled")
+                else BanglaFormatters.tr("অ্যান্ড্রয়েড ট্যাব ভিউ চালু হয়েছে", "Compact Tab View Enabled"),
                 ToastVariant.INFO
             )
+        }
+    }
+
+    fun toggleThemeMode() {
+        playSound(CyberSoundType.TAP)
+        val current = uiState.value.walletConfig.themeMode
+        val next = if (current == "light") "dark" else "light"
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(themeMode = next) }
+            showToastMessage(
+                if (next == "light") BanglaFormatters.tr("☀️ লাইট থিম চালু করা হয়েছে", "☀️ Light Theme Enabled")
+                else BanglaFormatters.tr("🌙 ডার্ক থিম চালু করা হয়েছে", "🌙 Dark Theme Enabled"),
+                ToastVariant.INFO
+            )
+        }
+    }
+
+    fun setThemeMode(mode: String) {
+        val normalized = if (mode == "light") "light" else "dark"
+        playSound(CyberSoundType.TAP)
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(themeMode = normalized) }
+        }
+    }
+
+    fun setLanguage(lang: String) {
+        val normalized = if (lang == "en") "en" else "bn"
+        BanglaFormatters.setLanguageMode(normalized)
+        playSound(CyberSoundType.TAP)
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(language = normalized) }
+            showToastMessage(
+                if (normalized == "en") "Language switched to English"
+                else "ভাষা বাংলাতে পরিবর্তন করা হয়েছে",
+                ToastVariant.INFO
+            )
+        }
+    }
+
+    fun toggleShowDbblSection() {
+        playSound(CyberSoundType.TAP)
+        val next = !uiState.value.walletConfig.showDbblSection
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(showDbblSection = next) }
+            showToastMessage(
+                if (next) BanglaFormatters.tr("🏦 ডিবিবিএল ব্যাংক ও কার্ড সেকশন চালু হয়েছে", "🏦 DBBL Bank & Card section shown")
+                else BanglaFormatters.tr("🏦 ডিবিবিএল ব্যাংক ও কার্ড সেকশন লুকানো হয়েছে", "🏦 DBBL Bank & Card section hidden"),
+                ToastVariant.INFO
+            )
+        }
+    }
+
+    fun toggleShowTempMoneySection() {
+        playSound(CyberSoundType.TAP)
+        val next = !uiState.value.walletConfig.showTempMoneySection
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(showTempMoneySection = next) }
         }
     }
 
@@ -282,8 +368,8 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
             repository.updateWalletConfig { it.copy(soundEnabled = next) }
             if (next) soundHelper.play(CyberSoundType.TAP, true)
             showToastMessage(
-                if (next) "অডিও ও হ্যাপটিক ভাইব চালু করা হয়েছে"
-                else "অডিও ভাইব বন্ধ করা হয়েছে",
+                if (next) BanglaFormatters.tr("অডিও ও হ্যাপটিক ভাইব চালু করা হয়েছে", "Sound & Haptics Enabled")
+                else BanglaFormatters.tr("অডিও ভাইব বন্ধ করা হয়েছে", "Sound & Haptics Muted"),
                 ToastVariant.INFO
             )
         }
@@ -293,6 +379,13 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         playSound(CyberSoundType.TAP)
         viewModelScope.launch {
             repository.updateWalletConfig { it.copy(bkashVisible = !it.bkashVisible) }
+        }
+    }
+
+    fun toggleDbblBalanceVisibility() {
+        playSound(CyberSoundType.TAP)
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(dbblVisible = !it.dbblVisible) }
         }
     }
 
@@ -327,6 +420,7 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         val defaultCat = categoryId ?: uiState.value.categories.firstOrNull()?.id ?: "grocery"
         val initialStep = when (presetMethod) {
             "bkash" -> ExpenseStep.STEP_2A_BKASH
+            "dbbl" -> ExpenseStep.STEP_2C_DBBL
             "cash" -> ExpenseStep.STEP_2B_TENDER
             else -> ExpenseStep.STEP_1_METHOD
         }
@@ -354,10 +448,15 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
 
     fun selectExpenseMethod(method: String) {
         playSound(CyberSoundType.TAP)
+        val nextStep = when (method) {
+            "bkash" -> ExpenseStep.STEP_2A_BKASH
+            "dbbl" -> ExpenseStep.STEP_2C_DBBL
+            else -> ExpenseStep.STEP_2B_TENDER
+        }
         _expenseWorkflow.update {
             it.copy(
                 method = method,
-                step = if (method == "bkash") ExpenseStep.STEP_2A_BKASH else ExpenseStep.STEP_2B_TENDER,
+                step = nextStep,
                 bkashError = null
             )
         }
@@ -390,19 +489,31 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
 
         if (amount <= 0) {
             playSound(CyberSoundType.WARN)
-            _expenseWorkflow.update { it.copy(bkashError = "অনুগ্রহ করে সঠিক খরচের পরিমাণ (৳১ বা তার বেশি) লিখুন।") }
+            _expenseWorkflow.update {
+                it.copy(
+                    bkashError = BanglaFormatters.tr(
+                        "অনুগ্রহ করে সঠিক খরচের পরিমাণ (৳১ বা তার বেশি) লিখুন।",
+                        "Please enter a valid expense amount (৳1 or more)."
+                    )
+                )
+            }
             return
         }
         if (amount > available) {
             playSound(CyberSoundType.WARN)
             _expenseWorkflow.update {
-                it.copy(bkashError = "বিকাশ ব্যালেন্স অপর্যাপ্ত! আগে বিকাশে টাকা যোগ করুন অথবা খরচের পরিমাণ কমান।")
+                it.copy(
+                    bkashError = BanglaFormatters.tr(
+                        "বিকাশ ব্যালেন্স অপর্যাপ্ত! আগে বিকাশে টাকা যোগ করুন অথবা খরচের পরিমাণ কমান।",
+                        "Insufficient bKash balance! Please add money to bKash first."
+                    )
+                )
             }
             return
         }
 
         val cat = uiState.value.categories.find { it.id == wf.categoryId }
-        val noteText = wf.noteInput.trim().ifEmpty { "${cat?.name ?: "বিকাশ"} পেমেন্ট" }
+        val noteText = wf.noteInput.trim().ifEmpty { "${cat?.name ?: "bKash"} পেমেন্ট" }
         val tx = TransactionEntity(
             id = "TRX-${System.currentTimeMillis()}",
             timestamp = System.currentTimeMillis(),
@@ -419,27 +530,107 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
             repository.insertTransaction(tx)
             playSound(CyberSoundType.CONFIRM)
             closeExpenseModal()
-            showToastMessage("বিকাশ থেকে ${BanglaFormatters.formatBDT(amount)} খরচ সফলভাবে রেকর্ড করা হয়েছে!")
+            showToastMessage(
+                BanglaFormatters.tr(
+                    "বিকাশ থেকে ${BanglaFormatters.formatBDT(amount)} খরচ সফলভাবে রেকর্ড করা হয়েছে!",
+                    "Spent ${BanglaFormatters.formatBDT(amount)} from bKash!"
+                )
+            )
         }
     }
 
+    fun confirmDbblExpense() {
+        val wf = _expenseWorkflow.value
+        val amount = wf.billAmount
+        val available = uiState.value.walletConfig.dbblBalance
+
+        if (amount <= 0) {
+            playSound(CyberSoundType.WARN)
+            _expenseWorkflow.update {
+                it.copy(
+                    bkashError = BanglaFormatters.tr(
+                        "অনুগ্রহ করে সঠিক খরচের পরিমাণ (৳১ বা তার বেশি) লিখুন।",
+                        "Please enter a valid payment amount (৳1 or more)."
+                    )
+                )
+            }
+            return
+        }
+        if (amount > available) {
+            playSound(CyberSoundType.WARN)
+            _expenseWorkflow.update {
+                it.copy(
+                    bkashError = BanglaFormatters.tr(
+                        "ডিবিবিএল ব্যাংক ব্যালেন্স অপর্যাপ্ত! আগে ব্যাংকে টাকা জমা করুন।",
+                        "Insufficient DBBL Bank balance! Deposit funds first."
+                    )
+                )
+            }
+            return
+        }
+
+        val cat = uiState.value.categories.find { it.id == wf.categoryId }
+        val noteText = wf.noteInput.trim().ifEmpty { "${cat?.name ?: "DBBL"} কার্ড/ব্যাংক পেমেন্ট" }
+        val tx = TransactionEntity(
+            id = "TRX-${System.currentTimeMillis()}",
+            timestamp = System.currentTimeMillis(),
+            type = "expense",
+            method = "dbbl",
+            categoryId = wf.categoryId,
+            amount = amount,
+            note = noteText,
+            tenderedTotal = amount
+        )
+
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(dbblBalance = it.dbblBalance - amount) }
+            repository.insertTransaction(tx)
+            playSound(CyberSoundType.CONFIRM)
+            closeExpenseModal()
+            showToastMessage(
+                BanglaFormatters.tr(
+                    "ডিবিবিএল ব্যাংক/কার্ড থেকে ${BanglaFormatters.formatBDT(amount)} পেমেন্ট সফল হয়েছে!",
+                    "Paid ${BanglaFormatters.formatBDT(amount)} via DBBL Bank/Card!"
+                )
+            )
+        }
+    }
+
+    /**
+     * Clicking a note in STEP_2B_TENDER adds +1 of that note AND automatically adds that note's
+     * value (+denom) to the Amount of Expenditure (billAmountInput). Clicking minus (−) decrements
+     * the note and subtracts denom from the Amount of Expenditure.
+     */
     fun adjustTenderNote(denom: Int, delta: Int) {
         val inVault = uiState.value.notes[denom] ?: 0
-        val current = _expenseWorkflow.value.tenderNotes[denom] ?: 0
+        val wf = _expenseWorkflow.value
+        val current = wf.tenderNotes[denom] ?: 0
         val next = (current + delta).coerceIn(0, inVault)
-        if (next == current) return
-        playSound(if (delta > 0) CyberSoundType.TAP else CyberSoundType.STEP_DOWN)
-        _expenseWorkflow.update { wf ->
-            val updated = wf.tenderNotes.toMutableMap()
+        val actualDelta = next - current
+        if (actualDelta == 0) return
+
+        playSound(if (actualDelta > 0) CyberSoundType.TAP else CyberSoundType.STEP_DOWN)
+        _expenseWorkflow.update { cur ->
+            val updated = cur.tenderNotes.toMutableMap()
             updated[denom] = next
-            wf.copy(tenderNotes = updated)
+            val currentBill = cur.billAmount
+            val nextBill = max(0, currentBill + actualDelta * denom)
+            val nextBillStr = if (nextBill > 0) BanglaFormatters.toBanglaDigits(nextBill) else ""
+            cur.copy(
+                tenderNotes = updated,
+                billAmountInput = nextBillStr
+            )
         }
     }
 
     fun clearTenderNotes() {
         playSound(CyberSoundType.STEP_DOWN)
         _expenseWorkflow.update { wf ->
-            wf.copy(tenderNotes = BanglaFormatters.DENOMINATIONS.associateWith { 0 })
+            val nextBillStr = if (wf.billAmount == wf.tenderTotal) "" else wf.billAmountInput
+            wf.copy(
+                tenderNotes = BanglaFormatters.DENOMINATIONS.associateWith { 0 },
+                billAmountInput = nextBillStr
+            )
         }
     }
 
@@ -448,13 +639,25 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         val bill = wf.billAmount
         if (bill <= 0) {
             playSound(CyberSoundType.WARN)
-            showToastMessage("অটো নোট নির্বাচনের আগে খরচের পরিমাণ (বিল) লিখুন!", ToastVariant.WARN)
+            showToastMessage(
+                BanglaFormatters.tr(
+                    "অটো নোট নির্বাচনের আগে খরচের পরিমাণ (বিল) লিখুন!",
+                    "Enter the expenditure amount before auto-selecting notes!"
+                ),
+                ToastVariant.WARN
+            )
             return
         }
         val vaultCash = uiState.value.cashTotal
         if (bill > vaultCash) {
             playSound(CyberSoundType.WARN)
-            showToastMessage("আপনার নগদ ভল্টে বিলের সমপরিমাণ টাকা নেই!", ToastVariant.WARN)
+            showToastMessage(
+                BanglaFormatters.tr(
+                    "আপনার নগদ ভল্টে বিলের সমপরিমাণ টাকা নেই!",
+                    "Not enough cash in your vault for this bill!"
+                ),
+                ToastVariant.WARN
+            )
             return
         }
 
@@ -485,23 +688,43 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         _expenseWorkflow.update { it.copy(tenderNotes = newTender) }
     }
 
+    /**
+     * When the amount of expenditure (`billAmount`) and given money (`tenderTotal`) are the same
+     * (`expectedChange == 0`), skip the return change option (`STEP_2B_CHANGE`) completely!
+     */
     fun proceedFromTenderToChange() {
         val wf = _expenseWorkflow.value
         val bill = wf.billAmount
         val tenderTotal = wf.tenderTotal
         if (bill <= 0) {
             playSound(CyberSoundType.WARN)
-            showToastMessage("অনুগ্রহ করে খরচের পরিমাণ (বিল) লিখুন!", ToastVariant.WARN)
+            showToastMessage(
+                BanglaFormatters.tr(
+                    "অনুগ্রহ করে খরচের পরিমাণ লিখুন বা নোট ট্যাপ করুন!",
+                    "Please enter expenditure amount or tap notes!"
+                ),
+                ToastVariant.WARN
+            )
             return
         }
         if (tenderTotal < bill) {
             playSound(CyberSoundType.WARN)
             showToastMessage(
-                "প্রদত্ত নোটের যোগফল (${BanglaFormatters.formatBDT(tenderTotal)}) বিলের (${BanglaFormatters.formatBDT(bill)}) চেয়ে কম হতে পারে না!",
+                BanglaFormatters.tr(
+                    "প্রদত্ত নোটের যোগফল (${BanglaFormatters.formatBDT(tenderTotal)}) বিলের (${BanglaFormatters.formatBDT(bill)}) চেয়ে কম হতে পারে না!",
+                    "Given notes (${BanglaFormatters.formatBDT(tenderTotal)}) cannot be less than bill (${BanglaFormatters.formatBDT(bill)})!"
+                ),
                 ToastVariant.WARN
             )
             return
         }
+
+        // If expenditure and given money are the same, skip STEP_2B_CHANGE (return change) completely!
+        if (bill == tenderTotal) {
+            commitCashExpenseTransaction()
+            return
+        }
+
         playSound(CyberSoundType.TAP)
         _expenseWorkflow.update { it.copy(step = ExpenseStep.STEP_2B_CHANGE) }
     }
@@ -545,14 +768,14 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         val cat = uiState.value.categories.find { it.id == wf.categoryId }
         val bill = wf.billAmount
         val tenderTotal = wf.tenderTotal
-        val receivedTotal = wf.receivedTotal
-        val expectedChange = wf.expectedChange
-        val discrepancy = wf.discrepancy
+        val receivedTotal = if (tenderTotal == bill) 0 else wf.receivedTotal
+        val expectedChange = max(0, tenderTotal - bill)
+        val discrepancy = receivedTotal - expectedChange
 
         val currentNotes = uiState.value.notes.toMutableMap()
         BanglaFormatters.DENOMINATIONS.forEach { d ->
             val given = wf.tenderNotes[d] ?: 0
-            val got = wf.receivedNotes[d] ?: 0
+            val got = if (tenderTotal == bill) 0 else (wf.receivedNotes[d] ?: 0)
             currentNotes[d] = max(0, (currentNotes[d] ?: 0) - given + got)
         }
 
@@ -568,7 +791,7 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
             note = labelNote,
             tenderedNotesEncoded = BanglaFormatters.encodeNotesMap(wf.tenderNotes),
             tenderedTotal = tenderTotal,
-            receivedNotesEncoded = BanglaFormatters.encodeNotesMap(wf.receivedNotes),
+            receivedNotesEncoded = if (tenderTotal == bill) "" else BanglaFormatters.encodeNotesMap(wf.receivedNotes),
             receivedTotal = receivedTotal,
             expectedChange = expectedChange,
             discrepancy = discrepancy
@@ -590,7 +813,12 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
             }
             playSound(CyberSoundType.CONFIRM)
             closeExpenseModal()
-            showToastMessage("নগদ খরচ (${BanglaFormatters.formatBDT(bill)}) ও ভাঙতি ভল্ট সফলভাবে আপডেট হয়েছে!")
+            showToastMessage(
+                BanglaFormatters.tr(
+                    "নগদ খরচ (${BanglaFormatters.formatBDT(bill)}) ও ভাঙতি ভল্ট সফলভাবে আপডেট হয়েছে!",
+                    "Cash expense (${BanglaFormatters.formatBDT(bill)}) recorded & vault updated!"
+                )
+            )
         }
     }
 
@@ -608,7 +836,7 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         val amt = BanglaFormatters.parseBanglaNumber(amountInput)
         if (amt <= 0) {
             playSound(CyberSoundType.WARN)
-            showToastMessage("অনুগ্রহ করে সঠিক টাকার পরিমাণ লিখুন।", ToastVariant.WARN)
+            showToastMessage(BanglaFormatters.tr("অনুগ্রহ করে সঠিক টাকার পরিমাণ লিখুন।", "Please enter a valid amount."), ToastVariant.WARN)
             return
         }
         val now = System.currentTimeMillis()
@@ -627,7 +855,234 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
             repository.insertTransaction(tx)
             playSound(CyberSoundType.CONFIRM)
             closeAddBkashModal()
-            showToastMessage("বিকাশ ব্যালেন্সে +${BanglaFormatters.formatBDT(amt)} সফলভাবে যোগ হয়েছে!")
+            showToastMessage(
+                BanglaFormatters.tr(
+                    "বিকাশ ব্যালেন্সে +${BanglaFormatters.formatBDT(amt)} সফলভাবে যোগ হয়েছে!",
+                    "Added +${BanglaFormatters.formatBDT(amt)} to bKash!"
+                )
+            )
+        }
+    }
+
+    // --- Add DBBL Bank Deposit Modal ---
+    fun openAddDbblModal() {
+        playSound(CyberSoundType.TAP)
+        _showAddDbblModal.value = true
+    }
+
+    fun closeAddDbblModal() {
+        _showAddDbblModal.value = false
+    }
+
+    fun confirmAddDbblMoney(amountInput: String, sourceInput: String) {
+        val amt = BanglaFormatters.parseBanglaNumber(amountInput)
+        if (amt <= 0) {
+            playSound(CyberSoundType.WARN)
+            showToastMessage(BanglaFormatters.tr("অনুগ্রহ করে সঠিক টাকার পরিমাণ লিখুন।", "Please enter a valid amount."), ToastVariant.WARN)
+            return
+        }
+        val now = System.currentTimeMillis()
+        val tx = TransactionEntity(
+            id = "TRX-$now",
+            timestamp = now,
+            type = "inflow",
+            method = "dbbl",
+            categoryId = "inflow",
+            amount = amt,
+            note = sourceInput.trim().ifEmpty { "ডিবিবিএল ব্যাংক অ্যাকাউন্টে জমা" },
+            receivedTotal = amt
+        )
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(dbblBalance = it.dbblBalance + amt) }
+            repository.insertTransaction(tx)
+            playSound(CyberSoundType.CONFIRM)
+            closeAddDbblModal()
+            showToastMessage(
+                BanglaFormatters.tr(
+                    "ডিবিবিএল ব্যাংকে +${BanglaFormatters.formatBDT(amt)} সফলভাবে জমা হয়েছে!",
+                    "Deposited +${BanglaFormatters.formatBDT(amt)} to DBBL Bank!"
+                )
+            )
+        }
+    }
+
+    // --- DBBL Bank Bridge Modal (ATM Withdraw to Cash Notes / DBBL ⇄ bKash Transfer) ---
+    fun openDbblBridgeModal(mode: String = "atm_withdraw") {
+        playSound(CyberSoundType.TAP)
+        val defaultAmt = 1000
+        val notesMap = computeAtmWithdrawNotes(defaultAmt)
+        _dbblBridge.value = DbblBridgeState(
+            isOpen = true,
+            mode = mode,
+            amountInput = BanglaFormatters.toBanglaDigits(defaultAmt),
+            notes = notesMap
+        )
+    }
+
+    fun closeDbblBridgeModal() {
+        _dbblBridge.update { it.copy(isOpen = false) }
+    }
+
+    fun updateDbblBridgeAmount(input: String) {
+        _dbblBridge.update { it.copy(amountInput = input) }
+    }
+
+    fun autoFillDbblBridgeNotes() {
+        playSound(CyberSoundType.TAP)
+        val cur = _dbblBridge.value
+        _dbblBridge.update { it.copy(notes = computeAtmWithdrawNotes(cur.amount)) }
+    }
+
+    private fun computeAtmWithdrawNotes(amount: Int): Map<Int, Int> {
+        var rem = amount
+        val result = BanglaFormatters.DENOMINATIONS.associateWith { 0 }.toMutableMap()
+        // Prefer ATM notes (1000, 500, 200, 100) then smaller denominations
+        for (d in BanglaFormatters.DENOMINATIONS) {
+            if (rem >= d) {
+                val cnt = rem / d
+                result[d] = cnt
+                rem -= cnt * d
+            }
+        }
+        return result
+    }
+
+    fun adjustDbblBridgeNote(denom: Int, delta: Int) {
+        val curState = _dbblBridge.value
+        val cur = curState.notes[denom] ?: 0
+        val next = (cur + delta).coerceIn(0, 99)
+        if (next == cur) return
+        playSound(if (delta > 0) CyberSoundType.TAP else CyberSoundType.STEP_DOWN)
+        val updated = curState.notes.toMutableMap()
+        updated[denom] = next
+        val nextSum = BanglaFormatters.calculateNotesTotal(updated)
+        _dbblBridge.update {
+            it.copy(
+                notes = updated,
+                amountInput = if (nextSum > 0) BanglaFormatters.toBanglaDigits(nextSum) else ""
+            )
+        }
+    }
+
+    fun confirmDbblBridgeTransfer() {
+        val state = _dbblBridge.value
+        val now = System.currentTimeMillis()
+        when (state.mode) {
+            "atm_withdraw" -> {
+                val notesSum = state.notesTotal
+                if (notesSum <= 0) {
+                    playSound(CyberSoundType.WARN)
+                    showToastMessage(BanglaFormatters.tr("এটিএম উত্তোলনের নোট নির্বাচন করুন!", "Select ATM withdrawal notes!"), ToastVariant.WARN)
+                    return
+                }
+                if (notesSum > uiState.value.walletConfig.dbblBalance) {
+                    playSound(CyberSoundType.WARN)
+                    showToastMessage(BanglaFormatters.tr("ডিবিবিএল ব্যাংকে পর্যাপ্ত ব্যালেন্স নেই!", "Insufficient DBBL Bank balance!"), ToastVariant.WARN)
+                    return
+                }
+                val updatedVault = uiState.value.notes.toMutableMap()
+                BanglaFormatters.DENOMINATIONS.forEach { d ->
+                    val add = state.notes[d] ?: 0
+                    if (add > 0) updatedVault[d] = (updatedVault[d] ?: 0) + add
+                }
+                val tx = TransactionEntity(
+                    id = "TRX-$now",
+                    timestamp = now,
+                    type = "inflow",
+                    method = "cash",
+                    categoryId = "inflow",
+                    amount = notesSum,
+                    note = "ডিবিবিএল এটিএম বুথ থেকে নগদ উত্তোলন",
+                    tenderedTotal = notesSum,
+                    receivedNotesEncoded = BanglaFormatters.encodeNotesMap(state.notes),
+                    receivedTotal = notesSum
+                )
+                viewModelScope.launch {
+                    repository.updateWalletConfig { it.copy(dbblBalance = it.dbblBalance - notesSum) }
+                    repository.setNoteCountsMap(updatedVault)
+                    repository.insertTransaction(tx)
+                    playSound(CyberSoundType.CONFIRM)
+                    closeDbblBridgeModal()
+                    showToastMessage(
+                        BanglaFormatters.tr(
+                            "ডিবিবিএল এটিএম উত্তোলন সফল! ভল্টে +${BanglaFormatters.formatBDT(notesSum)} যোগ হয়েছে।",
+                            "ATM Withdrawal complete! +${BanglaFormatters.formatBDT(notesSum)} added to Cash Vault."
+                        )
+                    )
+                }
+            }
+            "to_bkash" -> {
+                val amt = state.amount
+                if (amt <= 0 || amt > uiState.value.walletConfig.dbblBalance) {
+                    playSound(CyberSoundType.WARN)
+                    showToastMessage(BanglaFormatters.tr("সঠিক পরিমাণ লিখুন (ব্যাংক ব্যালেন্সের মধ্যে)!", "Enter a valid amount within DBBL balance!"), ToastVariant.WARN)
+                    return
+                }
+                val tx = TransactionEntity(
+                    id = "TRX-$now",
+                    timestamp = now,
+                    type = "inflow",
+                    method = "bkash",
+                    categoryId = "inflow",
+                    amount = amt,
+                    note = "ডিবিবিএল নেক্সাসপে থেকে বিকাশে অ্যাড মানি",
+                    tenderedTotal = amt,
+                    receivedTotal = amt
+                )
+                viewModelScope.launch {
+                    repository.updateWalletConfig {
+                        it.copy(
+                            dbblBalance = it.dbblBalance - amt,
+                            bkashBalance = it.bkashBalance + amt
+                        )
+                    }
+                    repository.insertTransaction(tx)
+                    playSound(CyberSoundType.CONFIRM)
+                    closeDbblBridgeModal()
+                    showToastMessage(
+                        BanglaFormatters.tr(
+                            "ডিবিবিএল ব্যাংক থেকে বিকাশে +${BanglaFormatters.formatBDT(amt)} স্থানান্তর সফল!",
+                            "Transferred ${BanglaFormatters.formatBDT(amt)} from DBBL to bKash!"
+                        )
+                    )
+                }
+            }
+            "from_bkash" -> {
+                val amt = state.amount
+                if (amt <= 0 || amt > uiState.value.walletConfig.bkashBalance) {
+                    playSound(CyberSoundType.WARN)
+                    showToastMessage(BanglaFormatters.tr("সঠিক পরিমাণ লিখুন (বিকাশ ব্যালেন্সের মধ্যে)!", "Enter a valid amount within bKash balance!"), ToastVariant.WARN)
+                    return
+                }
+                val tx = TransactionEntity(
+                    id = "TRX-$now",
+                    timestamp = now,
+                    type = "inflow",
+                    method = "dbbl",
+                    categoryId = "inflow",
+                    amount = amt,
+                    note = "বিকাশ থেকে ডিবিবিএল ব্যাংকে ট্রান্সফার",
+                    tenderedTotal = amt,
+                    receivedTotal = amt
+                )
+                viewModelScope.launch {
+                    repository.updateWalletConfig {
+                        it.copy(
+                            bkashBalance = it.bkashBalance - amt,
+                            dbblBalance = it.dbblBalance + amt
+                        )
+                    }
+                    repository.insertTransaction(tx)
+                    playSound(CyberSoundType.CONFIRM)
+                    closeDbblBridgeModal()
+                    showToastMessage(
+                        BanglaFormatters.tr(
+                            "বিকাশ থেকে ডিবিবিএল ব্যাংকে +${BanglaFormatters.formatBDT(amt)} স্থানান্তর সফল!",
+                            "Transferred ${BanglaFormatters.formatBDT(amt)} from bKash to DBBL!"
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -1067,10 +1522,8 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         val clean = expr.trim()
         if (clean.isEmpty()) return 0
         return try {
-            // Simple left-to-right / operator precedence evaluator for +, -, *, /
             val tokens = Regex("(?<=[+\\-*/])|(?=[+\\-*/])").split(clean).map { it.trim() }.filter { it.isNotEmpty() }
             if (tokens.isEmpty()) return 0
-            // First pass: * and /
             val pass1 = mutableListOf<String>()
             var i = 0
             while (i < tokens.size) {
@@ -1086,7 +1539,6 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
                     i++
                 }
             }
-            // Second pass: + and -
             var acc = pass1.firstOrNull()?.toDoubleOrNull() ?: 0.0
             var j = 1
             while (j + 1 < pass1.size) {
@@ -1127,6 +1579,25 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         _filterState.update { it.copy(dateFilter = dateRange) }
     }
 
+    fun updateFilterCustomDays(days: Int) {
+        val clean = days.coerceIn(1, 3650)
+        _filterState.update { it.copy(dateFilter = "custom_days", customDaysCount = clean) }
+    }
+
+    fun periodLabelForFilter(f: HistoryFilterState): String {
+        return when (f.dateFilter) {
+            "today" -> BanglaFormatters.tr("আজকের লেনদেন", "Today")
+            "week" -> BanglaFormatters.tr("গত ৭ দিন", "Last 7 Days")
+            "month" -> BanglaFormatters.tr("চলতি মাস (এই মাস)", "This Month")
+            "year" -> BanglaFormatters.tr("চলতি বছর (এই বছর)", "This Year")
+            "custom_days" -> BanglaFormatters.tr(
+                "গত ${BanglaFormatters.toBanglaDigits(f.customDaysCount)} দিন",
+                "Last ${f.customDaysCount} Days"
+            )
+            else -> BanglaFormatters.tr("সব সময়ের লেনদেন", "All Time")
+        }
+    }
+
     fun filteredTransactions(state: TakaVaultUiState): List<TransactionEntity> {
         val f = state.filterState
         val q = f.searchQuery.trim().lowercase()
@@ -1138,17 +1609,23 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         cal.set(Calendar.MILLISECOND, 0)
         val startOfToday = cal.timeInMillis
         val sevenDaysAgo = now - 7 * 86_400_000L
+        val customDaysAgo = now - f.customDaysCount.toLong() * 86_400_000L
         cal.set(Calendar.DAY_OF_MONTH, 1)
         val startOfMonth = cal.timeInMillis
+        cal.set(Calendar.MONTH, Calendar.JANUARY)
+        val startOfYear = cal.timeInMillis
 
         return state.transactions.filter { tx ->
             if (f.methodFilter == "cash" && !(tx.type == "expense" && tx.method == "cash")) return@filter false
             if (f.methodFilter == "bkash" && !(tx.type == "expense" && tx.method == "bkash")) return@filter false
+            if (f.methodFilter == "dbbl" && !(tx.type == "expense" && tx.method == "dbbl")) return@filter false
             if (f.methodFilter == "inflow" && tx.type != "inflow") return@filter false
             if (f.categoryFilter != "all" && tx.categoryId != f.categoryFilter) return@filter false
             if (f.dateFilter == "today" && tx.timestamp < startOfToday) return@filter false
             if (f.dateFilter == "week" && tx.timestamp < sevenDaysAgo) return@filter false
             if (f.dateFilter == "month" && tx.timestamp < startOfMonth) return@filter false
+            if (f.dateFilter == "year" && tx.timestamp < startOfYear) return@filter false
+            if (f.dateFilter == "custom_days" && tx.timestamp < customDaysAgo) return@filter false
             if (q.isNotEmpty()) {
                 val catName = state.categories.find { it.id == tx.categoryId }?.name?.lowercase() ?: ""
                 val noteLower = tx.note.lowercase()
@@ -1162,7 +1639,62 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         playSound(CyberSoundType.STEP_DOWN)
         viewModelScope.launch {
             repository.deleteTransaction(txId)
-            showToastMessage("লেনদেনটি ইতিহাস থেকে মুছে ফেলা হয়েছে।", ToastVariant.INFO)
+            showToastMessage(BanglaFormatters.tr("লেনদেনটি ইতিহাস থেকে মুছে ফেলা হয়েছে।", "Transaction removed from history."), ToastVariant.INFO)
+        }
+    }
+
+    // --- Biometric Authentication Lock & Session ---
+    fun unlockVaultSession() {
+        _isSessionUnlocked.value = true
+        playSound(CyberSoundType.CONFIRM)
+        showToastMessage(
+            BanglaFormatters.tr(
+                "🔓 ফিঙ্গারপ্রিন্ট যাচাই সফল! টাকাভল্ট আনলক হয়েছে।",
+                "🔓 Biometric verified! TakaVault unlocked."
+            ),
+            ToastVariant.SUCCESS
+        )
+    }
+
+    fun lockVaultSessionNow() {
+        _isSessionUnlocked.value = false
+        playSound(CyberSoundType.TAP)
+    }
+
+    fun toggleBiometricLockEnabled() {
+        val next = !uiState.value.walletConfig.biometricLockEnabled
+        playSound(CyberSoundType.TAP)
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(biometricLockEnabled = next) }
+            if (next) {
+                // Keep current session unlocked while user is inside Settings, so it locks on next launch or manual lock
+                _isSessionUnlocked.value = true
+            }
+            showToastMessage(
+                if (next) BanglaFormatters.tr("🔐 অ্যাপ লঞ্চে ফিঙ্গারপ্রিন্ট বায়োমেট্রিক লক চালু হয়েছে!", "🔐 Biometric fingerprint lock enabled on app launch!")
+                else BanglaFormatters.tr("🔓 বায়োমেট্রিক লক বন্ধ করা হয়েছে।", "🔓 Biometric fingerprint lock disabled."),
+                ToastVariant.INFO
+            )
+        }
+    }
+
+    fun saveBiometricPin(pinInput: String) {
+        val clean = pinInput.filter { it.isDigit() }.take(6)
+        if (clean.length < 4) {
+            playSound(CyberSoundType.WARN)
+            showToastMessage(
+                BanglaFormatters.tr("অন্তত ৪ ডিজিটের ব্যাকআপ পিন লিখুন!", "Enter at least a 4-digit backup PIN!"),
+                ToastVariant.WARN
+            )
+            return
+        }
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(biometricPinCode = clean) }
+            playSound(CyberSoundType.CONFIRM)
+            showToastMessage(
+                BanglaFormatters.tr("🔐 ব্যাকআপ সিকিউরিটি পিন সংরক্ষিত হয়েছে!", "🔐 Backup security PIN saved!"),
+                ToastVariant.SUCCESS
+            )
         }
     }
 
@@ -1189,13 +1721,40 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         val valNum = BanglaFormatters.parseBanglaNumber(budgetInput)
         if (valNum <= 0) {
             playSound(CyberSoundType.WARN)
-            showToastMessage("অনুগ্রহ করে সঠিক মাসিক বাজেট সীমা লিখুন!", ToastVariant.WARN)
+            showToastMessage(BanglaFormatters.tr("অনুগ্রহ করে সঠিক মাসিক বাজেট সীমা লিখুন!", "Please enter a valid monthly budget!"), ToastVariant.WARN)
             return
         }
         viewModelScope.launch {
             repository.updateWalletConfig { it.copy(monthlyBudget = valNum) }
             playSound(CyberSoundType.CONFIRM)
-            showToastMessage("মাসিক বাজেট লিমিট ${BanglaFormatters.formatBDT(valNum)}-এ আপডেট করা হয়েছে!")
+            showToastMessage(BanglaFormatters.tr("মাসিক বাজেট লিমিট ${BanglaFormatters.formatBDT(valNum)}-এ আপডেট করা হয়েছে!", "Monthly budget updated to ${BanglaFormatters.formatBDT(valNum)}!"))
+        }
+    }
+
+    fun saveSavingsGoal(goalInput: String) {
+        val valNum = BanglaFormatters.parseBanglaNumber(goalInput)
+        if (valNum < 0) return
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(savingsGoal = valNum) }
+            playSound(CyberSoundType.CONFIRM)
+            showToastMessage(BanglaFormatters.tr("সঞ্চয় লক্ষ্যমাত্রা ${BanglaFormatters.formatBDT(valNum)} সংরক্ষিত হয়েছে!", "Savings goal updated to ${BanglaFormatters.formatBDT(valNum)}!"))
+        }
+    }
+
+    fun saveLowBhangtiThreshold(threshold: Int) {
+        val clean = threshold.coerceIn(2, 30)
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(lowBhangtiThreshold = clean) }
+            playSound(CyberSoundType.TAP)
+        }
+    }
+
+    fun saveDbblAccountNo(accInput: String) {
+        val clean = accInput.filter { it.isDigit() }.takeLast(4).ifEmpty { "4829" }
+        viewModelScope.launch {
+            repository.updateWalletConfig { it.copy(dbblAccountNo = clean) }
+            playSound(CyberSoundType.CONFIRM)
+            showToastMessage(BanglaFormatters.tr("ডিবিবিএল কার্ড/অ্যাকাউন্ট নম্বর (*$clean) সংরক্ষিত হয়েছে!", "DBBL Account/Card (*$clean) saved!"))
         }
     }
 
@@ -1204,7 +1763,7 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
             repository.hardResetZero()
             playSound(CyberSoundType.CONFIRM)
             closeSettingsModal()
-            showToastMessage("সকল ব্যালেন্স, ভাঙতি নোট ও লেনদেন মুছে শূন্য (০) করা হয়েছে।", ToastVariant.INFO)
+            showToastMessage(BanglaFormatters.tr("সকল ব্যালেন্স, ভাঙতি নোট ও লেনদেন মুছে শূন্য (০) করা হয়েছে।", "All balances, notes, and history reset to zero."), ToastVariant.INFO)
         }
     }
 
@@ -1213,7 +1772,7 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
             repository.seedRichDemoData()
             playSound(CyberSoundType.CONFIRM)
             closeSettingsModal()
-            showToastMessage("নমুনা ডাটা (বিকাশ, ভাঙতি ভল্ট ও লেনদেন) সফলভাবে লোড হয়েছে!")
+            showToastMessage(BanglaFormatters.tr("নমুনা ডাটা (বিকাশ, ডিবিবিএল, ভাঙতি ভল্ট ও লেনদেন) সফলভাবে লোড হয়েছে!", "Sample demo data loaded!"))
         }
     }
 
@@ -1225,16 +1784,24 @@ class TakaVaultViewModel(application: Application) : AndroidViewModel(applicatio
         }
     }
 
+    fun exportTransactionsCsv(onReady: (String) -> Unit) {
+        viewModelScope.launch {
+            val csv = repository.exportTransactionsCsvString()
+            playSound(CyberSoundType.CONFIRM)
+            onReady(csv)
+        }
+    }
+
     fun importBackupJson(jsonStr: String) {
         viewModelScope.launch(Dispatchers.IO) {
             val ok = repository.importBackupJsonString(jsonStr)
             if (ok) {
                 playSound(CyberSoundType.CONFIRM)
                 closeSettingsModal()
-                showToastMessage("ডাটা ব্যাকআপ সফলভাবে রিস্টোর করা হয়েছে!")
+                showToastMessage(BanglaFormatters.tr("ডাটা ব্যাকআপ সফলভাবে রিস্টোর করা হয়েছে!", "Backup restored successfully!"))
             } else {
                 playSound(CyberSoundType.WARN)
-                showToastMessage("ত্রুটি: সঠিক টাকাভল্ট JSON ব্যাকআপ ফাইল নির্বাচন করুন!", ToastVariant.WARN)
+                showToastMessage(BanglaFormatters.tr("ত্রুটি: সঠিক টাকাভল্ট JSON ব্যাকআপ ফাইল নির্বাচন করুন!", "Error: Invalid TakaVault JSON backup file!"), ToastVariant.WARN)
             }
         }
     }

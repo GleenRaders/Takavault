@@ -11,6 +11,20 @@ object BanglaFormatters {
 
     val DENOMINATIONS = listOf(1000, 500, 200, 100, 50, 20, 10, 5, 2, 1)
 
+    @Volatile
+    var currentLanguage: String = "bn" // "bn" or "en"
+
+    fun tr(bn: String, en: String): String = if (currentLanguage == "en") en else bn
+
+    fun setLanguageMode(lang: String) {
+        val normalized = if (lang == "en") "en" else "bn"
+        if (currentLanguage != normalized) {
+            currentLanguage = normalized
+            bdtFormatCache.clear()
+            dateFormatCache.clear()
+        }
+    }
+
     // Pre-computed O(1) lookup table for numbers 0..2000 (covers all note counts & denominations)
     private val smallNumberCache = Array(2001) { n ->
         val s = n.toString()
@@ -28,13 +42,30 @@ object BanglaFormatters {
         }
     }
 
+    private val enDateFormatter = object : ThreadLocal<SimpleDateFormat>() {
+        override fun initialValue(): SimpleDateFormat {
+            return SimpleDateFormat("d MMM, hh:mm a", Locale.US)
+        }
+    }
+
     fun toBanglaDigits(input: Int): String {
+        if (currentLanguage == "en") return input.toString()
         if (input in 0..2000) return smallNumberCache[input]
         return toBanglaDigits(input.toString())
     }
 
     fun toBanglaDigits(input: Any?): String {
-        if (input == null) return "০"
+        if (input == null) return if (currentLanguage == "en") "0" else "০"
+        if (currentLanguage == "en") {
+            val s = input.toString()
+            val out = CharArray(s.length)
+            for (i in s.indices) {
+                val ch = s[i]
+                val bnIdx = bnDigits.indexOf(ch)
+                out[i] = if (bnIdx >= 0) ('0' + bnIdx) else ch
+            }
+            return String(out)
+        }
         if (input is Int && input in 0..2000) return smallNumberCache[input]
         val str = input.toString()
         val len = str.length
@@ -65,13 +96,14 @@ object BanglaFormatters {
     }
 
     fun formatBDT(amount: Long): String {
-        bdtFormatCache[amount]?.let { return it }
+        val cacheKey = if (currentLanguage == "en") amount xor (1L shl 62) else amount
+        bdtFormatCache[cacheKey]?.let { return it }
         val isNeg = amount < 0
         val formatted = formatIndianCommas(abs(amount))
         val prefix = if (isNeg) "-৳" else "৳"
-        val result = prefix + toBanglaDigits(formatted)
+        val result = prefix + if (currentLanguage == "en") formatted else toBanglaDigits(formatted)
         if (bdtFormatCache.size < 1024) {
-            bdtFormatCache[amount] = result
+            bdtFormatCache[cacheKey] = result
         }
         return result
     }
@@ -96,12 +128,16 @@ object BanglaFormatters {
     }
 
     fun formatBanglaDateTime(timestamp: Long): String {
-        // Bucket by minute to maximize cache hits while staying accurate
-        val minuteKey = timestamp / 60_000L
+        val minuteKey = (timestamp / 60_000L) xor (if (currentLanguage == "en") (1L shl 61) else 0L)
         dateFormatCache[minuteKey]?.let { return it }
         val formatted = try {
-            val sdf = bnDateFormatter.get() ?: SimpleDateFormat("d MMM, hh:mm a", banglaLocale)
-            toBanglaDigits(sdf.format(Date(timestamp)))
+            if (currentLanguage == "en") {
+                val sdf = enDateFormatter.get() ?: SimpleDateFormat("d MMM, hh:mm a", Locale.US)
+                sdf.format(Date(timestamp))
+            } else {
+                val sdf = bnDateFormatter.get() ?: SimpleDateFormat("d MMM, hh:mm a", banglaLocale)
+                toBanglaDigits(sdf.format(Date(timestamp)))
+            }
         } catch (_: Exception) {
             val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.US)
             toBanglaDigits(sdf.format(Date(timestamp)))
@@ -121,7 +157,7 @@ object BanglaFormatters {
                 sb.append('৳').append(toBanglaDigits(denom)).append('×').append(toBanglaDigits(count))
             }
         }
-        return if (sb.isNotEmpty()) sb.toString() else "৳০"
+        return if (sb.isNotEmpty()) sb.toString() else if (currentLanguage == "en") "৳0" else "৳০"
     }
 
     fun encodeNotesMap(notesMap: Map<Int, Int>): String {

@@ -29,9 +29,20 @@ class TakaVaultRepository(private val dao: TakaVaultDao) {
                 id = 1,
                 bkashBalance = 8450,
                 bkashVisible = true,
+                dbblBalance = 24500,
+                dbblVisible = true,
+                showDbblSection = currentConfig?.showDbblSection ?: true,
+                dbblAccountNo = currentConfig?.dbblAccountNo ?: "4829",
                 monthlyBudget = 25000,
+                savingsGoal = currentConfig?.savingsGoal ?: 5000,
+                lowBhangtiThreshold = currentConfig?.lowBhangtiThreshold ?: 8,
+                showTempMoneySection = currentConfig?.showTempMoneySection ?: true,
                 soundEnabled = currentConfig?.soundEnabled ?: true,
-                layoutMode = currentConfig?.layoutMode ?: "tabs"
+                layoutMode = currentConfig?.layoutMode ?: "tabs",
+                themeMode = currentConfig?.themeMode ?: "dark",
+                language = currentConfig?.language ?: "bn",
+                biometricLockEnabled = currentConfig?.biometricLockEnabled ?: false,
+                biometricPinCode = currentConfig?.biometricPinCode ?: "1234"
             )
         )
 
@@ -91,6 +102,21 @@ class TakaVaultRepository(private val dao: TakaVaultDao) {
                     discrepancy = 0
                 ),
                 TransactionEntity(
+                    id = "TRX-${now - 54_000_000L}",
+                    timestamp = now - 54_000_000L,
+                    type = "expense",
+                    method = "dbbl",
+                    categoryId = "clothes",
+                    amount = 1850,
+                    note = "আড়ং শোরুম নেক্সাস কার্ড পেমেন্ট",
+                    tenderedNotesEncoded = "",
+                    tenderedTotal = 1850,
+                    receivedNotesEncoded = "",
+                    receivedTotal = 0,
+                    expectedChange = 0,
+                    discrepancy = 0
+                ),
+                TransactionEntity(
                     id = "TRX-${now - 86_400_000L}",
                     timestamp = now - 86_400_000L,
                     type = "expense",
@@ -143,7 +169,7 @@ class TakaVaultRepository(private val dao: TakaVaultDao) {
 
     suspend fun hardResetZero() {
         val current = dao.getWalletConfig() ?: WalletConfigEntity()
-        dao.upsertWalletConfig(current.copy(bkashBalance = 0))
+        dao.upsertWalletConfig(current.copy(bkashBalance = 0, dbblBalance = 0))
         dao.upsertNoteCounts(BanglaFormatters.DENOMINATIONS.map { NoteCountEntity(it, 0) })
         dao.clearTransactions()
         dao.clearDebts()
@@ -203,13 +229,26 @@ class TakaVaultRepository(private val dao: TakaVaultDao) {
         val temps = dao.getTempMoney()
 
         val root = JSONObject()
+        root.put("version", "4.0")
+        root.put("exportedAt", System.currentTimeMillis())
         root.put("bkashBalance", config.bkashBalance)
         root.put("bkashVisible", config.bkashVisible)
+        root.put("dbblBalance", config.dbblBalance)
+        root.put("dbblVisible", config.dbblVisible)
+        root.put("showDbblSection", config.showDbblSection)
+        root.put("dbblAccountNo", config.dbblAccountNo)
 
         val settingsObj = JSONObject()
         settingsObj.put("monthlyBudget", config.monthlyBudget)
+        settingsObj.put("savingsGoal", config.savingsGoal)
+        settingsObj.put("lowBhangtiThreshold", config.lowBhangtiThreshold)
+        settingsObj.put("showTempMoneySection", config.showTempMoneySection)
         settingsObj.put("soundEnabled", config.soundEnabled)
         settingsObj.put("layoutMode", config.layoutMode)
+        settingsObj.put("themeMode", config.themeMode)
+        settingsObj.put("language", config.language)
+        settingsObj.put("biometricLockEnabled", config.biometricLockEnabled)
+        settingsObj.put("biometricPinCode", config.biometricPinCode)
         root.put("settings", settingsObj)
 
         val notesObj = JSONObject()
@@ -283,6 +322,20 @@ class TakaVaultRepository(private val dao: TakaVaultDao) {
         return root.toString(2)
     }
 
+    suspend fun exportTransactionsCsvString(): String {
+        val cats = dao.getCategories().associateBy { it.id }
+        val txs = dao.getTransactions()
+        val sb = StringBuilder()
+        sb.append("ID,DateTime,Type,Method,Category,AmountBDT,Note,TenderedTotal,ReceivedTotal,ExpectedChange,Discrepancy\n")
+        for (t in txs) {
+            val catName = (cats[t.categoryId]?.name ?: t.categoryId).replace("\"", "\"\"")
+            val cleanNote = t.note.replace("\"", "\"\"")
+            val dt = BanglaFormatters.formatBanglaDateTime(t.timestamp).replace("\"", "\"\"")
+            sb.append("\"${t.id}\",\"$dt\",\"${t.type}\",\"${t.method}\",\"$catName\",${t.amount},\"$cleanNote\",${t.tenderedTotal},${t.receivedTotal},${t.expectedChange},${t.discrepancy}\n")
+        }
+        return sb.toString()
+    }
+
     suspend fun importBackupJsonString(jsonStr: String): Boolean {
         return try {
             val root = JSONObject(jsonStr)
@@ -290,19 +343,42 @@ class TakaVaultRepository(private val dao: TakaVaultDao) {
 
             val bkashBalance = root.optInt("bkashBalance", 0)
             val bkashVisible = root.optBoolean("bkashVisible", true)
+            val dbblBalance = root.optInt("dbblBalance", 24500)
+            val dbblVisible = root.optBoolean("dbblVisible", true)
+            val showDbblSection = root.optBoolean("showDbblSection", true)
+            val dbblAccountNo = root.optString("dbblAccountNo", "4829")
+
             val settingsObj = root.optJSONObject("settings")
             val monthlyBudget = settingsObj?.optInt("monthlyBudget", 25000) ?: 25000
+            val savingsGoal = settingsObj?.optInt("savingsGoal", 5000) ?: 5000
+            val lowBhangtiThreshold = settingsObj?.optInt("lowBhangtiThreshold", 8) ?: 8
+            val showTempMoneySection = settingsObj?.optBoolean("showTempMoneySection", true) ?: true
             val soundEnabled = settingsObj?.optBoolean("soundEnabled", true) ?: true
             val layoutMode = settingsObj?.optString("layoutMode", "tabs") ?: "tabs"
+            val themeMode = settingsObj?.optString("themeMode", "dark") ?: "dark"
+            val language = settingsObj?.optString("language", "bn") ?: "bn"
+            val biometricLockEnabled = settingsObj?.optBoolean("biometricLockEnabled", false) ?: false
+            val biometricPinCode = settingsObj?.optString("biometricPinCode", "1234") ?: "1234"
 
             dao.upsertWalletConfig(
                 WalletConfigEntity(
                     id = 1,
                     bkashBalance = bkashBalance,
                     bkashVisible = bkashVisible,
+                    dbblBalance = dbblBalance,
+                    dbblVisible = dbblVisible,
+                    showDbblSection = showDbblSection,
+                    dbblAccountNo = dbblAccountNo,
                     monthlyBudget = monthlyBudget,
+                    savingsGoal = savingsGoal,
+                    lowBhangtiThreshold = lowBhangtiThreshold,
+                    showTempMoneySection = showTempMoneySection,
                     soundEnabled = soundEnabled,
-                    layoutMode = layoutMode
+                    layoutMode = layoutMode,
+                    themeMode = themeMode,
+                    language = language,
+                    biometricLockEnabled = biometricLockEnabled,
+                    biometricPinCode = biometricPinCode
                 )
             )
 

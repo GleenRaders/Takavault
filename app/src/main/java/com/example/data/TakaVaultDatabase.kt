@@ -112,7 +112,7 @@ interface TakaVaultDao {
         DebtEntity::class,
         TempMoneyEntity::class
     ],
-    version = 1,
+    version = 3,
     exportSchema = false
 )
 abstract class TakaVaultDatabase : RoomDatabase() {
