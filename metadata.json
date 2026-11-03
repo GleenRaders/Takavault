@@ -1,0 +1,6 @@
+{
+  "name": "টাকাভল্ট ৪.০",
+  "description": "স্মার্ট বিকাশ ও ভাঙতি নোট ট্র্যাকার অ্যান্ড্রয়েড অ্যাপ",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">টাকাভল্ট ৪.০</string>
+    <string name="app_subtitle">স্মার্ট বিকাশ ও ভাঙতি নোট ভল্ট</string>
+    <string name="tab_home">হোম ও ভল্ট</string>
+    <string name="tab_bhangti">ভাঙতি</string>
+    <string name="tab_categories">খরচ ও খাত</string>
+    <string name="tab_tools">বাকি ও টুলস</string>
+    <string name="tab_history">ইতিহাস ও চার্ট</string>
+</resources>
